@@ -52,6 +52,7 @@ type ProcessCollector struct {
 	threadOffset     int
 	localLog         bool
 	designed         []string
+	enable           bool
 }
 
 func init() {
@@ -91,6 +92,7 @@ func newProcessCollector(g_logger log.Logger) (Collector, error) {
 				openFileOffset:   jsonProcessInfo.GetInt("openFileOffset"),
 				threadOffset:     jsonProcessInfo.GetInt("threadOffset"),
 				localLog:         jsonProcessInfo.GetBool("localLog"),
+				enable:           jsonProcessInfo.GetBool("enable"),
 				designed:         names,
 			}, nil
 		}
@@ -104,6 +106,7 @@ func newProcessCollector(g_logger log.Logger) (Collector, error) {
 		openFileOffset:   100,
 		threadOffset:     30,
 		localLog:         true,
+		enable:           true,
 		designed:         nil,
 	}, nil
 }
@@ -113,6 +116,7 @@ func newProcessCollector(g_logger log.Logger) (Collector, error) {
 */
 func (collector *ProcessCollector) Update(ch chan<- prometheus.Metric) error {
 	lastTime := collector.lastCollectTime
+	enable := collector.enable
 	currentTime := time.Now().Unix()
 	var err error
 	var allProcessInfo []ProcessInfo
@@ -132,7 +136,7 @@ func (collector *ProcessCollector) Update(ch chan<- prometheus.Metric) error {
 		if designedProcess != nil {
 			if collector.localLog {
 				for _, process := range designedProcess {
-					logger.Log("Process", fmt.Sprintf("pid:%d,cpu:%f,vms:%d,rss:%d,files:%d,thread:%d,read:%d,write:%d",
+					logger.Log("designedProcess", fmt.Sprintf("pid:%d,cpu:%f,vms:%d,rss:%d,files:%d,thread:%d,read:%d,write:%d",
 						process.pid, process.cpu, process.vms, process.rss, process.numOpenFiles,
 						process.numThread, process.readBytes, process.writeBytes))
 				}
@@ -161,39 +165,41 @@ func (collector *ProcessCollector) Update(ch chan<- prometheus.Metric) error {
 			}
 			ch <- createSuccessMetric("designedProcess", 1)
 			collector.lastCollectTime = currentTime
+		}
+		if enable {
+			if collector.localLog {
+				for _, process := range allProcessInfo {
+					logger.Log("Process", fmt.Sprintf("pid:%d,cpu:%f,vms:%d,rss:%d,files:%d,thread:%d,read:%d,write:%d",
+						process.pid, process.cpu, process.vms, process.rss, process.numOpenFiles,
+						process.numThread, process.readBytes, process.writeBytes))
+				}
+			}
+
+			sort.Slice(allProcessInfo, func(i, j int) bool {
+				return allProcessInfo[i].pid < allProcessInfo[j].pid
+			})
+			if !isSendAll {
+				addProcessInfos, changedProccessInfos, removedProcessInfos, newAllProcessInfos := getChangedProcess(collector, allProcessInfo)
+				for _, process := range addProcessInfos {
+					ch <- createProcessMetric(&process, DT_Add)
+				}
+				for _, process := range changedProccessInfos {
+					ch <- createProcessMetric(&process, DT_Changed)
+				}
+				for _, process := range removedProcessInfos {
+					ch <- createProcessMetric(&process, DT_Delete)
+				}
+				collector.lastProcessInfo = newAllProcessInfos
+			} else {
+				for _, process := range allProcessInfo {
+					ch <- createProcessMetric(&process, DT_All)
+				}
+				collector.lastProcessInfo = allProcessInfo
+			}
+			ch <- createSuccessMetric("process", 1)
+			collector.lastCollectTime = currentTime
 			return nil
 		}
-		if collector.localLog {
-			for _, process := range allProcessInfo {
-				logger.Log("Process", fmt.Sprintf("pid:%d,cpu:%f,vms:%d,rss:%d,files:%d,thread:%d,read:%d,write:%d",
-					process.pid, process.cpu, process.vms, process.rss, process.numOpenFiles,
-					process.numThread, process.readBytes, process.writeBytes))
-			}
-		}
-
-		sort.Slice(allProcessInfo, func(i, j int) bool {
-			return allProcessInfo[i].pid < allProcessInfo[j].pid
-		})
-		if !isSendAll {
-			addProcessInfos, changedProccessInfos, removedProcessInfos, newAllProcessInfos := getChangedProcess(collector, allProcessInfo)
-			for _, process := range addProcessInfos {
-				ch <- createProcessMetric(&process, DT_Add)
-			}
-			for _, process := range changedProccessInfos {
-				ch <- createProcessMetric(&process, DT_Changed)
-			}
-			for _, process := range removedProcessInfos {
-				ch <- createProcessMetric(&process, DT_Delete)
-			}
-			collector.lastProcessInfo = newAllProcessInfos
-		} else {
-			for _, process := range allProcessInfo {
-				ch <- createProcessMetric(&process, DT_All)
-			}
-			collector.lastProcessInfo = allProcessInfo
-		}
-		ch <- createSuccessMetric("process", 1)
-		collector.lastCollectTime = currentTime
 		return nil
 	}
 }
